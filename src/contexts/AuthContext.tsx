@@ -1,5 +1,8 @@
 import React, { createContext, useContext, useEffect, useReducer } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import axios from 'axios';
+
+const API_BASE = process.env.OPAL_API_BASE || 'http://localhost:3000';
 
 type AuthState = { isLoading: boolean; userToken: string | null };
 
@@ -40,25 +43,32 @@ export const AuthProvider: React.FC = ({ children }) => {
     })();
   }, []);
 
-  const authContext = {
-    state,
-    signIn: async (data: { email: string; password: string }) => {
-      // TODO: call backend auth
-      const fakeToken = 'dummy-token';
-      await AsyncStorage.setItem('@opal_token', fakeToken);
-      dispatch({ type: 'SIGN_IN', token: fakeToken });
-    },
-    signOut: async () => {
-      await AsyncStorage.removeItem('@opal_token');
-      dispatch({ type: 'SIGN_OUT' });
-    },
-    signUp: async (data: { email: string; password: string }) => {
-      // TODO: call backend create user
-      const fakeToken = 'dummy-token';
-      await AsyncStorage.setItem('@opal_token', fakeToken);
-      dispatch({ type: 'SIGN_IN', token: fakeToken });
+  const signIn = async (data: { email: string; password: string }) => {
+    const res = await axios.post(`${API_BASE}/auth/login`, data);
+    if (res.data && res.data.token) {
+      await AsyncStorage.setItem('@opal_token', res.data.token);
+      dispatch({ type: 'SIGN_IN', token: res.data.token });
+    } else {
+      throw new Error('invalid_response');
     }
   };
+
+  const signOut = async () => {
+    await AsyncStorage.removeItem('@opal_token');
+    dispatch({ type: 'SIGN_OUT' });
+  };
+
+  const signUp = async (data: { email: string; password: string }) => {
+    const res = await axios.post(`${API_BASE}/auth/register`, data);
+    if (res.data && res.data.token) {
+      await AsyncStorage.setItem('@opal_token', res.data.token);
+      dispatch({ type: 'SIGN_IN', token: res.data.token });
+    } else {
+      throw new Error('invalid_response');
+    }
+  };
+
+  const authContext = { state, signIn, signOut, signUp };
 
   return <AuthContext.Provider value={authContext}>{children}</AuthContext.Provider>;
 };
