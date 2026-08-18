@@ -3,7 +3,6 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
-const ffmpeg = require('fluent-ffmpeg');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const bcrypt = require('bcryptjs');
@@ -14,7 +13,9 @@ const port = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'opal_dev_secret';
 
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const JOBS_DIR = path.join(__dirname, 'jobs');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+if (!fs.existsSync(JOBS_DIR)) fs.mkdirSync(JOBS_DIR, { recursive: true });
 
 const USERS_FILE = path.join(__dirname, 'users.json');
 if (!fs.existsSync(USERS_FILE)) fs.writeFileSync(USERS_FILE, JSON.stringify([]));
@@ -97,60 +98,62 @@ app.post('/auth/login', async (req, res) => {
   }
 });
 
-// Upload endpoint (multipart/form-data, field: file)
-app.post('/upload', upload.single('file'), (req, res) => {
+// Auth middleware
+function ensureAuth(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth) return res.status(401).json({ error: 'no_auth' });
+  const parts = auth.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'invalid_auth_format' });
+  const token = parts[1];
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = payload;
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: 'invalid_token' });
+  }
+}
+
+// Upload endpoint (multipart/form-data, field: file) - protected
+app.post('/upload', ensureAuth, upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'no_file' });
   const url = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
   res.json({ url });
 });
 
-// Export endpoint (POST JSON) - accepts { media: [{ url, type }] }
-app.post('/export', async (req, res) => {
+// Export endpoint (enqueue job) - protected
+app.post('/export', ensureAuth, async (req, res) => {
   try {
     const { media, output = 'output.mp4' } = req.body;
     if (!media || !Array.isArray(media) || media.length === 0) return res.status(400).json({ error: 'no_media' });
 
-    // For MVP we'll only concat video files (skip images)
-    const videoItems = media.filter(m => m.type === 'video' || (m.url && m.url.match(/\.(mp4|mov|mkv|webm)(\?|$)/i)));
-    if (videoItems.length === 0) return res.status(400).json({ error: 'no_video_items' });
+    const jobId = uuidv4();
+    const job = {
+      id: jobId,
+      media,
+      output,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+      result: null,
+      error: null
+    };
 
-    const downloaded = [];
-    for (const item of videoItems) {
-      const url = item.url;
-      const filename = path.join(UPLOAD_DIR, `${Date.now()}-${path.basename(url).split('?')[0]}`);
-      const writer = fs.createWriteStream(filename);
-      const response = await axios.get(url, { responseType: 'stream' });
-      await new Promise((resolve, reject) => {
-        response.data.pipe(writer);
-        writer.on('finish', resolve);
-        writer.on('error', reject);
-      });
-      downloaded.push(filename);
-    }
+    fs.writeFileSync(path.join(JOBS_DIR, `${jobId}.json`), JSON.stringify(job, null, 2));
 
-    const listFile = path.join(UPLOAD_DIR, `list-${Date.now()}.txt`);
-    const listContent = downloaded.map(f => `file '${f}'`).join('\n');
-    fs.writeFileSync(listFile, listContent);
-
-    const outFilename = path.join(UPLOAD_DIR, `${Date.now()}-${output}`);
-
-    // Use ffmpeg concat demuxer
-    await new Promise((resolve, reject) => {
-      ffmpeg()
-        .input(listFile)
-        .inputOptions(['-f', 'concat', '-safe', '0'])
-        .outputOptions(['-c', 'copy'])
-        .on('end', () => resolve())
-        .on('error', (err) => reject(err))
-        .save(outFilename);
-    });
-
-    const outUrl = `${req.protocol}://${req.get('host')}/uploads/${path.basename(outFilename)}`;
-    res.json({ url: outUrl });
+    res.json({ jobId });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'export_failed', details: err.message });
+    res.status(500).json({ error: 'enqueue_failed' });
   }
+});
+
+// Get job status
+app.get('/export/status/:id', ensureAuth, (req, res) => {
+  const id = req.params.id;
+  const file = path.join(JOBS_DIR, `${id}.json`);
+  if (!fs.existsSync(file)) return res.status(404).json({ error: 'job_not_found' });
+  const job = JSON.parse(fs.readFileSync(file));
+  res.json({ id: job.id, status: job.status, result: job.result, error: job.error });
 });
 
 app.listen(port, () => {
