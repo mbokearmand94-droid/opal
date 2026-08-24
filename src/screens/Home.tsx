@@ -1,4 +1,4 @@
-// Small update to Home to add navigation to ProjectsList
+// Small update to Home to add navigation to ProjectsList and Settings
 import React from 'react';
 import { View, Text, Button, StyleSheet } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
@@ -14,6 +14,7 @@ export default function HomeScreen() {
         <Text style={styles.title}>Opal</Text>
         <View style={{ flexDirection: 'row', gap: 8 }}>
           <Button title="Mes projets" onPress={() => navigation.navigate('ProjectsList' as never)} />
+          <Button title="Paramètres" onPress={() => navigation.navigate('Settings' as never)} />
           <Button title="Se déconnecter" onPress={() => signOut()} />
         </View>
       </View>
